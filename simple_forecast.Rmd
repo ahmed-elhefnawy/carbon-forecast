@@ -1,0 +1,268 @@
+---
+title: <center> <h1>Simple forecast of CO~2~ emissions</h1> </center> <h1 style="font-size:40px;"></h1>
+author: <center> <h2>Ahmed Elhefnawy</h2> </center>
+geometry: "left=2cm,right=3cm,top=2cm,bottom=2cm"
+output: html_document
+---
+<style type="text/css">
+  body{
+  font-family: "Times New Roman", Times, serif;
+  font-size: 12pt;
+}
+h1 {
+font-family: "Times New Roman", Times, serif;
+font-size:14pt
+}
+h2 {font-family: "Times New Roman", Times, serif;
+font-size:13pt
+}
+</style>
+
+<style>
+body {
+text-align: justify}
+</style>
+```{r setup, include=FALSE, }
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\
+
+Today I wanted to look into how CO~2~ emissions changed over time, not in a 
+rigorous way but just to have a glimpse about where are we going in controlling 
+the level of emissions.
+So, I found a dataset of carbon dioxide emissions per capita, in metric tons, 
+published by the World Bank [here](https://data.worldbank.org/indicator/EN.ATM.CO2E.PC?view=chart).
+The dataset considers CO~2~ emissions as those stemming from the burning of 
+fossil fuels and the manufacture of cement. They include carbon dioxide produced
+during consumption of solid, liquid, and gas fuels and gas flaring.
+
+Let's start!
+
+First load the packages we need:
+```{r, message=FALSE,}
+library(readxl)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(reshape2)
+library(janitor)
+
+#import the dataset. I renamed the file as you can see.
+emission<-read_xls("carbondioxideemmision.xls")
+
+#now let's see the first small part of the data
+emission[1:7,1:7] #alternatively, you can use head() function to review the first parts of the data.
+```
+
+Before doing anything, we have to clean the data first.
+```{r,}
+#remove the first two rows, since they contain nothing.
+emission<-emission[-c(1:2),]
+
+#the first row contains the names of columns, yet the columns are not named properly. Change the columns names to be as the first row
+colnames(emission)<-emission[1,]
+
+#after we renamed the columns by the first row, we don't need the first row anymore, so let's delete it.
+emission<-emission[-c(1),]
+```
+
+Now let's see again:
+```{r}
+emission[1:5,]
+```
+
+```{r,}
+#since we have "years" as variables (columns), we can transpose the data so that countries will be variables and years as rows. I'll tell you later why we did that. 
+emission<-as.data.frame(t(emission))
+
+#again column names are not properly named, so we change them as before.
+colnames(emission)<-emission[1,]
+
+#the first four rows are no use for us, we can remove them. The first row contains country names, which we had already used to name our columns, the remaining rows contain country code, indicator name, and indicator code, respectively, and we'll not use any of them.
+emission<-emission[-c(1:4),]
+
+#now let's have a look
+emission[1:7,1:7]
+
+#now before playing with these numbers let's see if R recognize them as numbers. Let's take the first country as an example.
+class(emission$Aruba)
+
+#R doesn't recognize the values as numbers. So we can use lapply function to declare all of them as numbers to R. Now here comes why we transposed the data before. The idea is to not have a country column, so I'd declare all columns as numbers to R without being concerned about a character column (the country column)  
+emission[]<-lapply(emission,function(x) as.numeric(as.character(x)))
+
+#then let's remove the countries that we don't have any observation about it.
+emission<-emission[, colSums(is.na(emission))<nrow(emission)]
+
+#the "year" is not recognized as a column by R yet. Let's declare it.
+setDT(emission,keep.rownames = "year")
+
+#let's have a quick look
+emission[1:5,1:5]
+emission[56:61,249:254]
+
+#it seems the last four years don't have any observations, let's remove them if they don't have any observations.
+emission<- emission[rowSums(is.na(emission)) != ncol(emission), ]
+emission[56:61,249:254]
+
+#then they might be just empty
+emission<-emission[!apply(emission == "", 1, all), ]
+emission[56:61,249:254]
+
+#again nothing happened. let's try another way
+emission<-janitor::remove_empty(emission,which=c("rows"))
+emission[56:61,249:254]
+
+#again nothing happened! we'll get rid of that problem later.
+
+#let's transform our data to long format so that we'd have the countries as a column altogether, resulting in a panel data
+emission<-melt(emission, id.vars="year",variable.name = "country")
+head(emission)
+```
+
+
+```{r,}
+#now let's start playing! first let's see how many countries or regions do we have. Keep in mind that the world bank usually aggregate the data based on the region or based on income, so the number here will be higher than the no. of countries.
+length(unique(emission$country))
+
+#let's go with the world values. first filter the data so that we have only the values for the world as a whole. Analogously, you can do the same for any country or countries as you want.
+world<-dplyr::filter(emission, country == "World")
+
+#remember that when we declared our values as numeric to R, the "years" column was not yet part of our data. it's still as a character 
+class(world$year)
+
+#declare it as numeric.
+world$year<-as.numeric(world$year)
+```
+
+
+```{r}
+#let's have a look
+head(world)
+```
+
+
+```{r,warning=FALSE,}
+#create a binary variable for countries so that it'll be TRUE if the emissions are higher than the emission average over time and FALSE otherwise. 
+world<- world %>%
+  mutate(above_avg=ifelse(value>mean(world$value,na.rm = TRUE),T,F))
+
+#let's remove the missing values, which was a problem before for us, but now it's easier since we have a time series data.
+world<-world[!is.na(world$value), ]
+
+#we can plot it and see!
+ggplot(mapping=aes(x=year,y=value),data=world)+geom_line()+geom_point(aes(color=above_avg))+scale_x_continuous(breaks=seq(1960,2016,by=5))+scale_y_continuous(breaks = seq(2,5,by=0.2))+labs(x="year",y="CO2 emissions (metric tons per capita)")+theme(legend.position = "none",axis.title = element_text(size=10))+geom_hline(yintercept = mean(world$value,na.rm=TRUE))+scale_color_manual(values=c("TRUE"="red","FALSE"="black"))+annotate("text",x=2012,y=mean(world$value,na.rm=TRUE),vjust=2, label="Average emission")
+```
+
+The emissions varied between $3$ metric tons per capita and $4.75$ metric tons per capita over the period $1960-2016$. It started to increase over time. The sharp decline was in the late $1980s$ with steady levels in the $1990s$ until early $2000s$ followed by a sharp increase again.
+
+But we may not be able to properly interpret the real difference between $3$ metric tons per capita and $3.5$ metric tons per capita, so we can see the annual percentage change of the emissions over the same period.
+
+
+```{r,warning=FALSE,}
+#create a new variable to capture the annual percentage change.
+#you can also use this equation. It will give the same result. world<-world %>%+mutate(annual_change=((value/lag(value))-1)*100)
+world$annual_change<-(((world$value-dplyr::lag(world$value))/dplyr::lag(world$value))*100)
+head(world)
+
+
+#now let's plot with the new variable. to determine the scale for x-axis and y-axis, I got the minimum and maximum for the years and for the percentages, using min() and max() functions. Note that when you use any of them always remove the missing values: na.rm=TRUE
+ggplot(mapping=aes(x=year,y=annual_change),data=world)+geom_line()+geom_point()+scale_x_continuous(breaks=seq(1960,2016,by=5))+scale_y_continuous(breaks = seq(-7,8,by=2))+labs(x="year",y="Annual Percentage Change of CO2 emissions (metric tons per capita)")+theme(legend.position = "none",axis.title = element_text(size=8))
+```
+
+
+We can see that the highest change was in $1970$ with more than $7\%$ increase than $1969$. The biggest success was in $1992$ when the emissions decreased by more than $6\%$ than the year before. As you can tell now, we only capture the change with only one year difference (lag=$1$), but we might have different numbers if we calculated over many years.
+
+For example: let's see the change from $1960$ to $2016$. First let's define how to calculate it:
+\begin{equation}
+\textrm{emissions}_{2016}={emissions}_{1960} * (1+r)^t,
+\end{equation}
+such that $r$ is the rate of change, and $t$ is the time period.
+
+Therefore, \begin{equation}
+\textrm{$r$}=[\frac{emissions_{2016}}{emissions_{1960}}]^{{1}/{t}} -1
+\end{equation}
+
+Let's calculate it:
+```{r}
+((((world[1,3])/(world[57,3]))^(1/(2016-1960)))-1)*100
+```
+
+Between $1960$ and $2016$, the metric tons per capita emissions of CO~2~ decreased by $0.72\%$
+
+
+## **Forecasting:**
+
+Let's try to make a forecast for the upcoming $10$ years. 
+First, for the theory behind forecasting, see, for example, (Hamilton, $1994$, pp. $72$-).
+Also note that all forecasting techniques have its own limitations, which you can look for it elsewhere.
+
+```{r}
+#first declare the data for R as time series.
+world_ts<-ts(world[,3],start=c(1960),end=c(2016),frequency = 1)
+
+head(world_ts,n=20)
+```
+
+
+We're going to use [Exponential Smoothing](https://mran.microsoft.com/web/packages/forecast/vignettes/JSS2008.pdf).
+
+```{r}
+ets(world_ts)
+```
+
+
+Let's have a look on what does that mean. $ETS(M,Ad,N)$ specifies the exponential smoothing method. $M$ for multiplicative error over time, $Ad$ for the trend component which additive damped, $N$ for the seasonal component which is None, as expected that our data has no seasonal component.
+
+
+The damped trend method tries to depress the trend to be flat at some point in the future. The rate of that "depressing" is $\phi$, which is given by $0.8$. $\alpha$ and $\beta$ are the smoothing parameters for the level and for the trend, respectively, Sigma, $\sigma$, is the standard deviation of residuals, $AIC$ is the Akaike Information Criterion which gives an estimation of how well the model fits the data, the lower the better. $AICc$ is the corrected Akaike Information Criterion to correct for the sample size and the number of parameters. $BIC$ is Bayesian Information Criteria. For more on $AIC$ and $BIC$, see: (Claeskens and Hjort, $2008$, pp. $22$-$98$).
+
+
+```{r}
+#let's see the accuracy of our model.
+accuracy(ets(world_ts))
+```
+
+$ME$ is the Mean Error, $RMSE$ is the Root Mean Squared Error, $MAE$ is the Mean Absolute Error, $MPE$ is the Mean Percentage Error, $MAPE$ is the Mean Absolute Percentage Error, $MASE$ is the Mean Absolute Scaled Error, and $ACF1$ is the AutoCorrelation of Error at lag $1$.
+
+
+
+```{r,}
+#let's forecast!
+#it will show the intervals at 80% and 95% confidence. you can change the level of confidence if you want.
+forecast(ets(world_ts)) 
+```
+
+Let's get to the final result:
+```{r}
+#to summarize what we got so far
+summary(forecast(ets(world_ts)))
+
+#plot our forecast
+plot(forecast(ets(world_ts)))
+```
+
+\
+
+It seems that, on average, the emissions won't increase significantly, which we hope to be true!
+
+**Keep in mind that we looked into the emissions data only without controlling for any variable that might affect the level of emissions**.
+
+
+Finally, I want to say that I didn't aim to be rigorous. I just wanted quickly, in my free time, to look into something that interests me and sharing it, so it might open a door for a new idea for someone else or for me in the future.  
+
+
+
+
+
+## **References:**
+
+<p style="font-family: times, serif; font-size:11pt; font-style:italic">
+    * Claeskens, G., Hjort, N. L. (2008): *Model Selection and Model Averaging*. Cambridge: Cambridge University Press.
+
+* Hamilton, J. D. (1994): *Time Series Analysis*. New Jersey: Princeton University Press.
+
+* Hyndman, R. J., Khandakar, Y. (2008): "Automatic Time Series Forecasting: the forecast Package for R". *Journal of Statistical Software*, Vol.(27)(3), 1-22.
+</p>
